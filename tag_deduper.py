@@ -1,3 +1,5 @@
+import re
+
 class TagFilterDeduper:
     @classmethod
     def INPUT_TYPES(s):
@@ -6,23 +8,22 @@ class TagFilterDeduper:
                 "tags_string": ("STRING", {"forceInput": True}),
                 
                 # ================= 1. Character (人物外貌) 模块 =================
-                "enable_Character": ("BOOLEAN", {"default": False, "label_on": "启用(ON)", "label_off": "禁用(OFF)"}),
+                "enable_Character": ("BOOLEAN", {"default": False, "label_on": "人物外貌启用(ON)", "label_off": "人物外貌禁用(OFF)"}),
                 "partial_Character": ("BOOLEAN", {"default": True, "label_on": "模糊匹配(Contains)", "label_off": "精确匹配(Exact)"}),
                 "preset_Character": ("STRING", {"multiline": True, "default": "1girl, 1boy, hair, eyes, skin, ears, ponytail, twintails, braid, ahoge"}),
                 
                 # ================= 2. Style (画风画质) 模块 =================
-                "enable_Style": ("BOOLEAN", {"default": False, "label_on": "启用(ON)", "label_off": "禁用(OFF)"}),
+                "enable_Style": ("BOOLEAN", {"default": False, "label_on": "画风画质启用(ON)", "label_off": "画风画质禁用(OFF)"}),
                 "partial_Style": ("BOOLEAN", {"default": True, "label_on": "模糊匹配(Contains)", "label_off": "精确匹配(Exact)"}),
                 "preset_Style": ("STRING", {"multiline": True, "default": "masterpiece, best quality, high quality, highres, absurdres, traditional media, sketch, watercolor, monochrome, comic, 3d, text, watermark"}),
                 
                 # ================= 3. Outfit (服装配饰) 模块 =================
-                "enable_Outfit": ("BOOLEAN", {"default": False, "label_on": "启用(ON)", "label_off": "禁用(OFF)"}),
+                "enable_Outfit": ("BOOLEAN", {"default": False, "label_on": "服装配饰启用(ON)", "label_off": "服装配饰禁用(OFF)"}),
                 "partial_Outfit": ("BOOLEAN", {"default": True, "label_on": "模糊匹配(Contains)", "label_off": "精确匹配(Exact)"}),
                 "preset_Outfit": ("STRING", {"multiline": True, "default": "shirt, skirt, dress, pants, shorts, pantyhose, thighhighs, socks, shoes, jacket, hat, glasses, jewelry, gloves"}),
                 
                 # ================= 4. Custom (自定义/抽象玩法) 模块 =================
-                # 修复：默认改为 False，与整体保持一致
-                "enable_Custom": ("BOOLEAN", {"default": False, "label_on": "启用(ON)", "label_off": "禁用(OFF)"}),
+                "enable_Custom": ("BOOLEAN", {"default": False, "label_on": "自定义启用(ON)", "label_off": "自定义禁用(OFF)"}),
                 "partial_Custom": ("BOOLEAN", {"default": True, "label_on": "模糊匹配(Contains)", "label_off": "精确匹配(Exact)"}),
                 "preset_Custom": ("STRING", {"multiline": True, "default": ""}),
 
@@ -48,13 +49,22 @@ class TagFilterDeduper:
                      enable_Custom, partial_Custom, preset_Custom,
                      purify_degrees, purify_keywords, size_modifiers_preset):
         
-        def parse_to_set(text):
-            return {t.strip().lower() for t in text.replace('\n', ',').split(',') if t.strip()}
+        # [新增] 标签标准化工具：统一小写、下划线转空格、剔除括号及括号内内容
+        def normalize_tag(t):
+            t = t.lower()
+            t = t.replace('_', ' ')
+            # 正则匹配并移除 " (xxx)" 这种格式的内容
+            t = re.sub(r'\s*\([^)]*\)', '', t)
+            return t.strip()
 
-        char_bl = parse_to_set(preset_Character) if enable_Character else set()
-        style_bl = parse_to_set(preset_Style) if enable_Style else set()
-        outfit_bl = parse_to_set(preset_Outfit) if enable_Outfit else set()
-        custom_bl = parse_to_set(preset_Custom) if enable_Custom else set()
+        # [修改] 解析配置框输入时，直接将词库全部标准化处理
+        def parse_to_normalized_set(text):
+            return {normalize_tag(t) for t in text.replace('\n', ',').split(',') if t.strip()}
+
+        char_bl = parse_to_normalized_set(preset_Character) if enable_Character else set()
+        style_bl = parse_to_normalized_set(preset_Style) if enable_Style else set()
+        outfit_bl = parse_to_normalized_set(preset_Outfit) if enable_Outfit else set()
+        custom_bl = parse_to_normalized_set(preset_Custom) if enable_Custom else set()
 
         raw_tags = [tag.strip() for tag in tags_string.split(",")]
         unique_tags = list(dict.fromkeys(raw_tags))
@@ -62,56 +72,69 @@ class TagFilterDeduper:
         base_filtered = []
         removed_tags = [] 
 
-        def is_match(tag_lower, bl_set, is_partial):
+        def is_match(norm_tag, bl_set, is_partial):
             if not bl_set: return False
             if is_partial:
                 for bl_term in bl_set:
-                    if bl_term in tag_lower: return True
+                    if bl_term in norm_tag: return True
                 return False
             else:
-                return tag_lower in bl_set
+                return norm_tag in bl_set
 
+        # ================= 第一阶段：基础模块过滤 =================
         for tag in unique_tags:
             if not tag: continue
-            tag_lower = tag.lower()
             
-            hit = (is_match(tag_lower, char_bl, partial_Character) or
-                   is_match(tag_lower, style_bl, partial_Style) or
-                   is_match(tag_lower, outfit_bl, partial_Outfit) or
-                   is_match(tag_lower, custom_bl, partial_Custom))
+            # 提取标准化后的词用于比对，但操作和保存依然用原词 `tag`
+            norm_tag = normalize_tag(tag)
+            
+            hit = (is_match(norm_tag, char_bl, partial_Character) or
+                   is_match(norm_tag, style_bl, partial_Style) or
+                   is_match(norm_tag, outfit_bl, partial_Outfit) or
+                   is_match(norm_tag, custom_bl, partial_Custom))
 
             if hit:
                 removed_tags.append(tag)
             else:
                 base_filtered.append(tag)
 
+        # ================= 第二阶段：尺寸提纯模块 =================
         final_tags = base_filtered.copy()
         if purify_degrees:
-            p_keywords = [k.strip().lower() for k in purify_keywords.split(",") if k.strip()]
-            size_modifiers = parse_to_set(size_modifiers_preset)
+            p_keywords = [normalize_tag(k) for k in purify_keywords.split(",") if k.strip()]
+            size_modifiers = parse_to_normalized_set(size_modifiers_preset)
             
             to_remove = set()
             for keyword in p_keywords:
-                matched_tags = [t for t in base_filtered if keyword in t.lower()]
+                # 找出所有包含该主体词的标签（基于标准化文本）
+                matched_tags = [t for t in base_filtered if keyword in normalize_tag(t)]
+                
                 if len(matched_tags) > 1:
                     for i in range(len(matched_tags)):
-                        tag_i = matched_tags[i].lower()
-                        if tag_i == keyword:
+                        norm_tag_i = normalize_tag(matched_tags[i])
+                        
+                        # 场景 A: 存在基础词，且存在修饰词组合 ，删去基础词
+                        if norm_tag_i == keyword:
                             for other_tag in matched_tags:
-                                other_tag_lower = other_tag.lower()
-                                if other_tag_lower != keyword:
-                                    prefix = other_tag_lower.replace(keyword, "").strip()
+                                norm_other_tag = normalize_tag(other_tag)
+                                if norm_other_tag != keyword:
+                                    prefix = norm_other_tag.replace(keyword, "").strip()
                                     if prefix in size_modifiers:
-                                        to_remove.add(matched_tags[i])
+                                        to_remove.add(matched_tags[i]) # 添加原词到待删除列表
                                         break
                             continue
                         
+                        # 场景 B: 存在两个包含修饰词的组合词 
                         for j in range(len(matched_tags)):
                             if i == j: continue
-                            tag_j = matched_tags[j].lower()
-                            if len(tag_j) > len(tag_i) and tag_j.endswith(keyword) and tag_i.endswith(keyword):
-                                prefix_i = tag_i.replace(keyword, "").strip()
-                                prefix_j = tag_j.replace(keyword, "").strip()
+                            norm_tag_j = normalize_tag(matched_tags[j])
+                            
+                            # 后缀匹配主体词，并提取修饰前缀比对
+                            if len(norm_tag_j) > len(norm_tag_i) and norm_tag_j.endswith(keyword) and norm_tag_i.endswith(keyword):
+                                prefix_i = norm_tag_i.replace(keyword, "").strip()
+                                prefix_j = norm_tag_j.replace(keyword, "").strip()
+                                
+                                # 如果前缀都在尺寸修饰库里，删去较短的那个（低层级）
                                 if prefix_i in size_modifiers and prefix_j in size_modifiers:
                                     to_remove.add(matched_tags[i])
 
